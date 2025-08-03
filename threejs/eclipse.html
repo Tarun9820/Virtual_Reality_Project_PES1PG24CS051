@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Eclipse Simulator - Space Background</title>
+  <script>
+    // Ensure THREE is defined globally before loading three.min.js
+    globalThis.THREE = {}; 
+  </script>
+  <script src="three.min.js"></script>
+  <script src="OrbitControls.js"></script>
+  <style>
+    body { 
+      margin: 0; 
+      overflow: hidden; 
+      font-family: Arial, sans-serif; 
+      background-color: rgb(0, 0, 0);
+    }
+    #ui { 
+      position: absolute; 
+      top: 10px; 
+      left: 10px; 
+      background: rgba(0,0,0,0.7);
+      color: white;
+      padding: 10px; 
+      border-radius: 5px; 
+      width: 300px; 
+      z-index: 10;
+      border: 1px solid #444;
+    }
+    select, button { 
+      width: 100%; 
+      padding: 6px; 
+      margin: 5px 0; 
+      background: #333;
+      color: white;
+      border: 1px solid #555;
+    }
+    #animation-progress { width: 100%; margin-top: 10px; }
+    .eclipse-type { margin: 10px 0; }
+    .eclipse-type label { margin-right: 15px; color: white; }
+    input[type="range"] {
+      width: 100%;
+      background: #333;
+    }
+    #screenshot-container { 
+      position: absolute; 
+      bottom: 10px; 
+      left: 10px; 
+      background: rgba(0,0,0,0.8);
+      color: white;
+      padding: 10px; 
+      border-radius: 5px; 
+      max-width: 300px; 
+      z-index: 10;
+      display: none;
+      border: 1px solid #444;
+    }
+    #screenshot-img { 
+      max-width: 100%; 
+      border: 1px solid #666; 
+    }
+    #screenshot-btns { 
+      margin-top: 10px; 
+      display: flex; 
+      justify-content: space-between; 
+    }
+    #screenshot-btns button { 
+      width: 48%; 
+      padding: 5px;
+      background: #444;
+      color: white;
+    }
+    #loading { 
+      position: absolute; 
+      top: 50%; 
+      left: 50%; 
+      transform: translate(-50%, -50%); 
+      color: white;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">Loading textures...</div>
+  <div id="ui">
+    <h2>Eclipse Simulator</h2>
+    <label for="time-scale">Time Scale:</label>
+    <input type="range" id="time-scale" min="0" max="500" value="100">
+
+    <div class="eclipse-type">
+      <label><input type="radio" name="eclipse-type" value="solar" checked> Solar Eclipse</label>
+      <label><input type="radio" name="eclipse-type" value="lunar"> Lunar Eclipse</label>
+    </div>
+
+    <label for="eclipse-date">Select Eclipse:</label>
+    <select id="eclipse-date">
+      <option value="2023-10-14">October 14, 2023 (Annular Solar)</option>
+      <option value="2024-04-08">April 8, 2024 (Total Solar)</option>
+      <option value="2024-10-02">October 2, 2024 (Annular Solar)</option>
+      <option value="2025-03-29">March 29, 2025 (Partial Solar)</option>
+      <option value="2025-09-21">September 21, 2025 (Partial Solar)</option>
+      <option value="2022-11-08">November 8, 2022 (Total Lunar)</option>
+      <option value="2025-03-14" selected>March 14, 2025 (Total Lunar)</option>
+      <option value="2025-09-07">September 7, 2025 (Total Lunar)</option>
+    </select>
+
+    <button id="animate-btn">Simulate Selected Eclipse</button>
+    <button id="reset-btn">Reset View</button>
+
+    <label for="view-latitude">Latitude: <span id="lat-value">25°</span></label>
+    <input type="range" id="view-latitude" min="-90" max="90" value="25">
+
+    <label for="view-longitude">Longitude: <span id="lon-value">-104°</span></label>
+    <input type="range" id="view-longitude" min="-180" max="180" value="-104">
+
+    <div id="location-info">Viewing from: 25°N, 104°W</div>
+    <progress id="animation-progress" value="0" max="100" style="display:none;"></progress>
+
+    <h3>Camera Position</h3>
+    <label for="cam-x">X Position: <span id="cam-x-value">0</span></label>
+    <input type="range" id="cam-x" min="-20" max="20" value="0">
+    <label for="cam-y">Y Position: <span id="cam-y-value">5</span></label>
+    <input type="range" id="cam-y" min="-20" max="20" value="5">
+    <label for="cam-z">Z Position: <span id="cam-z-value">15</span></label>
+    <input type="range" id="cam-z" min="-20" max="20" value="15">
+
+    <button id="top-view-btn">Top View</button>
+    <button id="side-view-btn">Side View</button>
+    <button id="earth-view-btn">Earth View</button>
+    <button id="sun-view-btn">Sun View</button>
+  </div>
+
+  <div id="screenshot-container">
+    <h3>Captured Eclipse</h3>
+    <img id="screenshot-img" src="">
+    <div id="screenshot-btns">
+      <button id="save-screenshot-btn">Save Image</button>
+      <button id="close-screenshot-btn">Close</button>
+    </div>
+  </div>
+
+  <script>
+    let scene, camera, renderer, controls;
+    let sun, earth, moon;
+    let earthOrbitAngle = 0;
+    let moonOrbitAngle = 0;
+    
+    let animationState = 'idle'; // States: 'idle', 'seeking', 'paused', 'animating'
+    let animationProgress = 0;
+    
+    const earthOrbitSemiMajorAxis = 10;
+    const earthOrbitEccentricity = 0.0167; 
+    const earthOrbitSemiMinorAxis = earthOrbitSemiMajorAxis * Math.sqrt(1 - earthOrbitEccentricity * earthOrbitEccentricity);
+
+    const clock = new THREE.Clock();
+    let seekProgress = 0, seekStartEarthAngle, seekTargetEarthAngle, seekStartMoonAngle, seekTargetMoonAngle;
+    let pauseTimer = 0;
+    const PAUSE_DURATION_SECONDS = 2;
+
+    const animationDuration = 10; // in seconds
+    let earthOrbitLine, moonOrbitLine;
+    let currentEclipseType = 'solar';
+    let originalMoonMaterial, originalEarthMaterial;
+    let hasCapturedEclipse = false;
+    let cameraTarget = new THREE.Vector3(0, 0, 0);
+    let manualCameraControl = false;
+    let texturesLoaded = 0;
+    const totalTextures = 2;
+    let stars;
+
+    const moonOrbitTilt = 10.0 * (Math.PI / 180); 
+    const moonOrbitEccentricity = 0.0549;
+    const moonOrbitSemiMajorAxis = 1.5;
+    const moonOrbitSemiMinorAxis = moonOrbitSemiMajorAxis * Math.sqrt(1 - moonOrbitEccentricity * moonOrbitEccentricity);
+
+    let moonUmbra, moonPenumbra;
+    let earthUmbra, earthPenumbra;
+    let moonShadowFrustum;
+    
+    const eclipseData = {
+        '2023-10-14': { type: 'solar', subtype: 'annular', startAngle: Math.PI - 0.2, endAngle: Math.PI + 0.2, earthAngle: Math.PI * 1.2, viewerPosition: { lat: 11.4, lon: -83.1 } },
+        '2024-04-08': { type: 'solar', subtype: 'total', startAngle: Math.PI - 0.2, endAngle: Math.PI + 0.2, earthAngle: Math.PI * 0.5, viewerPosition: { lat: 25.3, lon: -104.1 } },
+        '2024-10-02': { type: 'solar', subtype: 'annular', startAngle: Math.PI - 0.2, endAngle: Math.PI + 0.2, earthAngle: Math.PI * 1.8, viewerPosition: { lat: -20.5, lon: -70.0 } },
+        '2025-03-29': { type: 'solar', subtype: 'partial', startAngle: Math.PI - 0.2, endAngle: Math.PI + 0.2, earthAngle: 0, viewerPosition: { lat: 65, lon: -45 } },
+        '2025-09-21': { type: 'solar', subtype: 'partial', startAngle: Math.PI - 0.2, endAngle: Math.PI + 0.2, earthAngle: Math.PI, viewerPosition: { lat: -65, lon: 45 } },
+        '2022-11-08': { type: 'lunar', subtype: 'total', startAngle: -0.25, endAngle: 0.25, earthAngle: Math.PI * 0.8, viewerPosition: { lat: 0, lon: 0 } },
+        '2025-03-14': { type: 'lunar', subtype: 'total', startAngle: -0.25, endAngle: 0.25, earthAngle: 0, viewerPosition: { lat: 0, lon: 0 } },
+        '2025-09-07': { type: 'lunar', subtype: 'total', startAngle: -0.25, endAngle: 0.25, earthAngle: Math.PI, viewerPosition: { lat: 0, lon: 0 } }
+    };
+
+    function createStars() {
+      const geometry = new THREE.BufferGeometry();
+      const vertices = [];
+      const starCount = 5000;
+      for (let i = 0; i < starCount; i++) {
+        const x = (Math.random() - 0.5) * 2000;
+        const y = (Math.random() - 0.5) * 2000;
+        const z = (Math.random() - 0.5) * 2000;
+        vertices.push(x, y, z);
+      }
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+      const material = new THREE.PointsMaterial({ color: 0xffffff, size: 0.5, transparent: true, opacity: 0.8 });
+      stars = new THREE.Points(geometry, material);
+      scene.add(stars);
+    }
+
+    function createMoonShadows() {
+      const umbraGeometry = new THREE.CircleGeometry(0.2, 32);
+      const umbraMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.9 });
+      moonUmbra = new THREE.Mesh(umbraGeometry, umbraMaterial);
+      moonUmbra.rotation.x = -Math.PI / 2;
+      moonUmbra.visible = false;
+      moonUmbra.position.y = -0.5;
+      earth.add(moonUmbra);
+      
+      const penumbraGeometry = new THREE.CircleGeometry(1.5, 32);
+      const penumbraMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 });
+      moonPenumbra = new THREE.Mesh(penumbraGeometry, penumbraMaterial);
+      moonPenumbra.rotation.x = -Math.PI / 2;
+      moonPenumbra.visible = false;
+      moonPenumbra.position.y = -0.5;
+      earth.add(moonPenumbra);
+    }
+
+    function createEarthShadows() {
+        const umbraGeometry = new THREE.SphereGeometry(1.2, 32, 32);
+        const umbraMaterial = new THREE.MeshBasicMaterial({ color: 0x110000, transparent: true, opacity: 0.8, side: THREE.BackSide });
+        earthUmbra = new THREE.Mesh(umbraGeometry, umbraMaterial);
+        earthUmbra.visible = false;
+        scene.add(earthUmbra);
+
+        const penumbraGeometry = new THREE.SphereGeometry(1.7, 32, 32); 
+        const penumbraMaterial = new THREE.MeshBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.25, side: THREE.BackSide });
+        earthPenumbra = new THREE.Mesh(penumbraGeometry, penumbraMaterial);
+        earthPenumbra.visible = false;
+        scene.add(earthPenumbra);
+    }
+
+    function createMoonShadowFrustum() {
+      const geometry = new THREE.ConeGeometry(0.5, 2, 32, 1, true);
+      const material = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
+      moonShadowFrustum = new THREE.Mesh(geometry, material);
+      moonShadowFrustum.visible = false;
+      scene.add(moonShadowFrustum);
+      return moonShadowFrustum;
+    }
+
+    function createEllipticalOrbitLine(semiMajor, semiMinor, tilt, color, segments = 64) {
+      const geometry = new THREE.BufferGeometry();
+      const material = new THREE.LineBasicMaterial({ color: color });
+      const points = [];
+      for (let i = 0; i <= segments; i++) {
+        const theta = (i / segments) * Math.PI * 2;
+        const x = Math.cos(theta) * semiMajor;
+        const z = Math.sin(theta) * semiMinor;
+        const y = -z * Math.sin(tilt);
+        const tiltedZ = z * Math.cos(tilt);
+        points.push(new THREE.Vector3(x, y, tiltedZ));
+      }
+      geometry.setFromPoints(points);
+      return new THREE.Line(geometry, material);
+    }
+
+    function takeScreenshot() {
+      const ui = document.getElementById('ui');
+      ui.style.visibility = 'hidden';
+      renderer.domElement.toBlob(function(blob) {
+        const screenshotUrl = URL.createObjectURL(blob);
+        document.getElementById('screenshot-img').src = screenshotUrl;
+        document.getElementById('screenshot-container').style.display = 'block';
+        ui.style.visibility = 'visible';
+        document.getElementById('save-screenshot-btn').onclick = function() {
+          const a = document.createElement('a');
+          a.href = screenshotUrl;
+          a.download = `eclipse-${new Date().toISOString().split('T')[0]}.png`;
+          a.click();
+        };
+      }, 'image/png');
+    }
+
+    function updateCameraPosition() {
+      manualCameraControl = true;
+      const x = parseFloat(document.getElementById('cam-x').value);
+      const y = parseFloat(document.getElementById('cam-y').value);
+      const z = parseFloat(document.getElementById('cam-z').value);
+      document.getElementById('cam-x-value').textContent = x.toFixed(1);
+      document.getElementById('cam-y-value').textContent = y.toFixed(1);
+      document.getElementById('cam-z-value').textContent = z.toFixed(1);
+      camera.position.set(x, y, z);
+      camera.lookAt(cameraTarget);
+      controls.target.copy(cameraTarget);
+      controls.update();
+    }
+
+    function setCameraView(x, y, z, target = null) {
+      document.getElementById('cam-x').value = x;
+      document.getElementById('cam-y').value = y;
+      document.getElementById('cam-z').value = z;
+      if (target) cameraTarget.copy(target);
+      updateCameraPosition();
+    }
+
+    function init() {
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x000000);
+      createStars();
+      camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+      camera.position.set(0, 10, 25);
+      renderer = new THREE.WebGLRenderer({antialias:true, preserveDrawingBuffer: true});
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      const ambient = new THREE.AmbientLight(0x333333);
+      scene.add(ambient);
+      const sunLight = new THREE.PointLight(0xffffff, 2, 100);
+      sunLight.position.set(0, 0, 0);
+      scene.add(sunLight);
+      const sunGeometry = new THREE.SphereGeometry(3, 32, 32);
+      const sunMat = new THREE.MeshBasicMaterial({ color: 0xffcc00 });
+      sun = new THREE.Mesh(sunGeometry, sunMat);
+      scene.add(sun);
+      const sunGlowGeometry = new THREE.SphereGeometry(3.2, 32, 32);
+      const sunGlowMat = new THREE.MeshBasicMaterial({ color: 0xff9900, transparent: true, opacity: 0.3 });
+      const sunGlow = new THREE.Mesh(sunGlowGeometry, sunGlowMat);
+      sun.add(sunGlow);
+      const earthTex = new THREE.TextureLoader().load('https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg', () => { if (++texturesLoaded === totalTextures) document.getElementById('loading').style.display = 'none'; });
+      const earthMaterial = new THREE.MeshStandardMaterial({ map: earthTex, emissive: 0x112244, emissiveIntensity: 0.3 });
+      earth = new THREE.Mesh( new THREE.SphereGeometry(1, 32, 32), earthMaterial );
+      scene.add(earth);
+      originalEarthMaterial = earth.material.clone();
+      const moonTex = new THREE.TextureLoader().load('https://threejs.org/examples/textures/planets/moon_1024.jpg', () => { if (++texturesLoaded === totalTextures) document.getElementById('loading').style.display = 'none'; });
+      originalMoonMaterial = new THREE.MeshStandardMaterial({ map: moonTex });
+      moon = new THREE.Mesh(new THREE.SphereGeometry(0.27, 32, 32), originalMoonMaterial);
+      scene.add(moon);
+      createMoonShadows();
+      createEarthShadows();
+      createMoonShadowFrustum();
+      earthOrbitLine = createEllipticalOrbitLine(earthOrbitSemiMajorAxis, earthOrbitSemiMinorAxis, 0, 0x446688);
+      scene.add(earthOrbitLine);
+      moonOrbitLine = createEllipticalOrbitLine(moonOrbitSemiMajorAxis, moonOrbitSemiMinorAxis, moonOrbitTilt, 0x888888);
+      earth.add(moonOrbitLine);
+      window.addEventListener('resize', onWindowResize);
+      document.getElementById('reset-btn').addEventListener('click', resetView);
+      document.getElementById('animate-btn').addEventListener('click', () => startEclipseAnimation(document.getElementById('eclipse-date').value));
+      document.getElementById('close-screenshot-btn').addEventListener('click', () => { document.getElementById('screenshot-container').style.display = 'none'; });
+      document.querySelectorAll('input[name="eclipse-type"]').forEach(radio => { radio.addEventListener('change', (e) => { currentEclipseType = e.target.value; updateEclipseOptions(); }); });
+      document.getElementById('view-latitude').addEventListener('input', (e) => updateViewerLocation(parseInt(e.target.value), parseInt(document.getElementById('view-longitude').value)));
+      document.getElementById('view-longitude').addEventListener('input', (e) => updateViewerLocation(parseInt(document.getElementById('view-latitude').value), parseInt(e.target.value)));
+      document.getElementById('cam-x').addEventListener('input', updateCameraPosition);
+      document.getElementById('cam-y').addEventListener('input', updateCameraPosition);
+      document.getElementById('cam-z').addEventListener('input', updateCameraPosition);
+      document.getElementById('top-view-btn').addEventListener('click', () => setCameraView(0, 30, 0, new THREE.Vector3(0,0,0)));
+      document.getElementById('side-view-btn').addEventListener('click', () => setCameraView(0, 10, 25, new THREE.Vector3(0,0,0)));
+      document.getElementById('earth-view-btn').addEventListener('click', () => setCameraView(earth.position.x - 3, earth.position.y + 1, earth.position.z, earth.position));
+      document.getElementById('sun-view-btn').addEventListener('click', () => setCameraView(0, 10, 20, earth.position));
+      updateEclipseOptions();
+      animate();
+    }
+
+    function updateEclipseOptions() {
+      const eclipseSelect = document.getElementById('eclipse-date');
+      const currentValue = eclipseSelect.value;
+      eclipseSelect.innerHTML = '';
+      const options = currentEclipseType === 'solar' ? [
+        ['2023-10-14', 'October 14, 2023 (Annular Solar)'], ['2024-04-08', 'April 8, 2024 (Total Solar)'], ['2024-10-02', 'October 2, 2024 (Annular Solar)'],
+        ['2025-03-29', 'March 29, 2025 (Partial Solar)'], ['2025-09-21', 'September 21, 2025 (Partial Solar)']
+      ] : [
+        ['2022-11-08', 'November 8, 2022 (Total Lunar)'], ['2025-03-14', 'March 14, 2025 (Total Lunar)'], ['2025-09-07', 'September 7, 2025 (Total Lunar)']
+      ];
+      options.forEach(([value, text]) => {
+        const option = new Option(text, value);
+        if (value === currentValue) option.selected = true;
+        eclipseSelect.add(option);
+      });
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const timeScale = parseInt(document.getElementById('time-scale').value) / 100;
+        const delta = clock.getDelta();
+
+        if (!manualCameraControl && animationState !== 'paused') {
+            cameraTarget.set(earth.position.x, earth.position.y, earth.position.z);
+            camera.lookAt(cameraTarget);
+            controls.target.copy(cameraTarget);
+        }
+
+        let currentMoonAngle;
+
+        if (animationState === 'idle') {
+            const earthRadiusAtAngle = (earthOrbitSemiMajorAxis * earthOrbitSemiMinorAxis) / Math.sqrt(Math.pow(earthOrbitSemiMinorAxis * Math.cos(earthOrbitAngle), 2) + Math.pow(earthOrbitSemiMajorAxis * Math.sin(earthOrbitAngle), 2));
+            const earthSpeedFactor = Math.pow(earthOrbitSemiMajorAxis / earthRadiusAtAngle, 2);
+            earthOrbitAngle += 0.002 * timeScale * earthSpeedFactor;
+            
+            // FIX: Correctly calculate moon speed factor based on its actual position
+            const idleMoonX = Math.cos(moonOrbitAngle) * moonOrbitSemiMajorAxis;
+            const idleMoonZ = Math.sin(moonOrbitAngle) * moonOrbitSemiMinorAxis;
+            const currentMoonRadius = Math.sqrt(idleMoonX**2 + idleMoonZ**2);
+            const moonSpeedFactor = Math.pow(moonOrbitSemiMajorAxis / currentMoonRadius, 2);
+            moonOrbitAngle += 0.02 * timeScale * moonSpeedFactor;
+            currentMoonAngle = moonOrbitAngle;
+        } 
+        else if (animationState === 'seeking') {
+            seekProgress += delta * 0.5; // Seek takes ~2 seconds
+            const lerpFactor = Math.min(seekProgress, 1.0);
+            
+            earthOrbitAngle = THREE.MathUtils.lerp(seekStartEarthAngle, seekTargetEarthAngle, lerpFactor);
+            moonOrbitAngle = THREE.MathUtils.lerp(seekStartMoonAngle, seekTargetMoonAngle, lerpFactor);
+            currentMoonAngle = moonOrbitAngle;
+
+            if (lerpFactor >= 1.0) {
+                animationState = 'paused';
+                pauseTimer = 0;
+            }
+        } 
+        else if (animationState === 'paused') {
+            pauseTimer += delta;
+            currentMoonAngle = moonOrbitAngle; // Keep moon at the starting position
+            if (pauseTimer >= PAUSE_DURATION_SECONDS) {
+                animationState = 'animating';
+                animationProgress = 0;
+            }
+        } 
+        else if (animationState === 'animating') {
+            const progress = Math.min(animationProgress / animationDuration, 1.0);
+            animationProgress += delta * timeScale;
+            
+            const eclipse = eclipseData[document.getElementById('eclipse-date').value];
+            currentMoonAngle = THREE.MathUtils.lerp(eclipse.startAngle, eclipse.endAngle, progress);
+            
+            document.getElementById('animation-progress').style.display = 'block';
+            document.getElementById('animation-progress').value = progress * 100;
+
+            if (progress >= 1.0) {
+                animationState = 'idle';
+                document.getElementById('animation-progress').style.display = 'none';
+            }
+        }
+
+        // --- Position Calculations (runs every frame) ---
+        const earthRadiusAtAngle = (earthOrbitSemiMajorAxis * earthOrbitSemiMinorAxis) / Math.sqrt(Math.pow(earthOrbitSemiMinorAxis * Math.cos(earthOrbitAngle), 2) + Math.pow(earthOrbitSemiMajorAxis * Math.sin(earthOrbitAngle), 2));
+        earth.position.x = Math.cos(earthOrbitAngle) * earthRadiusAtAngle;
+        earth.position.z = Math.sin(earthOrbitAngle) * earthRadiusAtAngle;
+        earth.rotation.y += (animationState === 'paused') ? 0 : 0.02 * timeScale * delta * 60;
+        
+        // FIX: Use correct elliptical formula for moon position to match the orbit line
+        const orbitX = Math.cos(currentMoonAngle) * moonOrbitSemiMajorAxis;
+        const orbitZ = Math.sin(currentMoonAngle) * moonOrbitSemiMinorAxis;
+        const orbitY = -orbitZ * Math.sin(moonOrbitTilt);
+        const tiltedOrbitZ = orbitZ * Math.cos(moonOrbitTilt);
+        const rotatedOrbitX = orbitX * Math.cos(earthOrbitAngle) - tiltedOrbitZ * Math.sin(earthOrbitAngle);
+        const rotatedOrbitZ = orbitX * Math.sin(earthOrbitAngle) + tiltedOrbitZ * Math.cos(earthOrbitAngle);
+        moon.position.set(earth.position.x + rotatedOrbitX, earth.position.y + orbitY, earth.position.z + rotatedOrbitZ);
+
+        // --- Visual Effects ---
+        if (animationState === 'animating') {
+            const eclipse = eclipseData[document.getElementById('eclipse-date').value];
+            if (eclipse.type === 'solar') {
+                moonUmbra.visible = true;
+                moonPenumbra.visible = true;
+                moonShadowFrustum.visible = true;
+                earthUmbra.visible = false;
+                earthPenumbra.visible = false;
+                const progress = animationProgress / animationDuration;
+                const shadowPathStart = new THREE.Vector3(0.5, -0.5, 0); 
+                const shadowPathEnd = new THREE.Vector3(-0.5, -0.5, 0); 
+                const shadowPos = new THREE.Vector3().lerpVectors(shadowPathStart, shadowPathEnd, progress);
+                const distanceToEarth = moon.position.distanceTo(earth.position);
+                const shadowScaleFactor = (eclipse.subtype === 'annular') ? 0.5 : 1.0;
+                
+                const umbraSize = Math.max(0.1, 0.4 * (1 - distanceToEarth / 2.0)) * shadowScaleFactor;
+                moonUmbra.position.copy(shadowPos);
+                moonPenumbra.position.copy(shadowPos);
+                moonUmbra.scale.set(umbraSize, umbraSize, umbraSize);
+                moonPenumbra.scale.set(1, 1, 1);
+
+                const direction = new THREE.Vector3().subVectors(earth.position, moon.position).normalize();
+                moonShadowFrustum.position.copy(moon.position);
+                moonShadowFrustum.scale.set(1, distanceToEarth * 0.9, 1);
+                moonShadowFrustum.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+                if (progress > 0.45 && progress < 0.55 && !hasCapturedEclipse) {
+                    takeScreenshot();
+                    hasCapturedEclipse = true;
+                }
+            } else { // Lunar
+                moonUmbra.visible = false;
+                moonPenumbra.visible = false;
+                moonShadowFrustum.visible = false;
+                earthUmbra.visible = true;
+                earthPenumbra.visible = true;
+                earthUmbra.position.copy(earth.position);
+                earthPenumbra.position.copy(earth.position);
+                const moonToEarthCenter = new THREE.Vector3().subVectors(moon.position, earth.position);
+                const distFromShadowCenter = moonToEarthCenter.length();
+                const umbraRadius = 1.2;
+                const penumbraRadius = 1.7;
+                if (distFromShadowCenter < penumbraRadius) {
+                    const lunarMat = originalMoonMaterial.clone();
+                    const penumbraAmount = 1 - (distFromShadowCenter - umbraRadius) / (penumbraRadius - umbraRadius);
+                    lunarMat.color.offsetHSL(0, 0, -0.2 * Math.max(0, penumbraAmount));
+                    if (distFromShadowCenter < umbraRadius) {
+                        const umbraAmount = 1 - distFromShadowCenter / umbraRadius;
+                        lunarMat.emissive.setHex(0xFF0000).multiplyScalar(umbraAmount * 0.6);
+                        lunarMat.emissiveIntensity = umbraAmount;
+                    }
+                    moon.material = lunarMat;
+                    if (distFromShadowCenter < umbraRadius * 0.5 && !hasCapturedEclipse) {
+                        takeScreenshot();
+                        hasCapturedEclipse = true;
+                    }
+                } else {
+                    moon.material = originalMoonMaterial;
+                }
+            }
+        } else {
+            moonUmbra.visible = false;
+            moonPenumbra.visible = false;
+            moonShadowFrustum.visible = false;
+            earthUmbra.visible = false;
+            earthPenumbra.visible = false;
+            moon.material = originalMoonMaterial;
+        }
+
+        controls.update();
+        renderer.render(scene, camera);
+    }
+
+    function startEclipseAnimation(date) {
+      animationState = 'seeking';
+      seekProgress = 0;
+      const data = eclipseData[date];
+
+      seekStartEarthAngle = earthOrbitAngle;
+      seekTargetEarthAngle = data.earthAngle;
+
+      seekStartMoonAngle = moonOrbitAngle;
+      seekTargetMoonAngle = data.startAngle;
+      
+      hasCapturedEclipse = false;
+      
+      if (data.type === 'solar') {
+        updateViewerLocation(data.viewerPosition.lat, data.viewerPosition.lon);
+        document.getElementById('view-latitude').value = data.viewerPosition.lat;
+        document.getElementById('view-longitude').value = data.viewerPosition.lon;
+      } else {
+        updateViewerLocation(0, 0);
+        document.getElementById('view-latitude').value = 0;
+        document.getElementById('view-longitude').value = 0;
+      }
+    }
+
+    function updateViewerLocation(lat, lon) {
+      document.getElementById('lat-value').textContent = lat + '°';
+      document.getElementById('lon-value').textContent = lon + '°';
+      const latText = lat === 0 ? 'Equator' : lat > 0 ? lat + '°N' : (-lat) + '°S';
+      const lonText = lon === 0 ? 'Prime Meridian' : lon > 0 ? lon + '°E' : (-lon) + '°W';
+      document.getElementById('location-info').textContent = `Viewing from: ${latText}, ${lonText}`;
+    }
+
+    function resetView() {
+      manualCameraControl = false;
+      setCameraView(0, 10, 25, new THREE.Vector3(0,0,0));
+      controls.reset();
+      animationState = 'idle';
+      document.getElementById('animation-progress').style.display = 'none';
+      moon.material = originalMoonMaterial;
+      hasCapturedEclipse = false;
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    init();
+  </script>
+</body>
+</html>
